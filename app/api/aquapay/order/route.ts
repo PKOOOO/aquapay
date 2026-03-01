@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { initiateMpesaCharge } from '@/lib/paystack';
+import { initiateMpesaCharge, isTestMode, submitChargeOTP } from '@/lib/paystack';
 import crypto from 'crypto';
 
 export async function POST(request: NextRequest) {
@@ -34,6 +34,11 @@ export async function POST(request: NextRequest) {
         if (!charge.success) {
             await sql`UPDATE aquapay_orders SET status='failed' WHERE order_id=${orderId}`;
             return NextResponse.json({ success: false, error: 'Payment failed: ' + charge.message }, { status: 502 });
+        }
+
+        if (isTestMode() && charge.data?.status === 'send_otp') {
+            console.log(`[ORDER] Test mode — auto-submitting OTP "123456"`);
+            await submitChargeOTP('123456', charge.data?.reference || ref);
         }
 
         return NextResponse.json({ success: true, order_id: orderId, amount_ml, amount_kes: amountCents });
