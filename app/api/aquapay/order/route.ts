@@ -14,6 +14,12 @@ export async function POST(request: NextRequest) {
         const amountCents = Math.round((amount_ml / 100) * 100);
         const amountKes = amountCents / 100;
 
+        // Auto-expire stale pending/paid orders older than 3 minutes
+        await sql`UPDATE aquapay_orders SET status='expired'
+                  WHERE dispenser_id=${dispenser_id}
+                    AND status IN ('pending','paid')
+                    AND created_at < NOW() - INTERVAL '3 minutes'`;
+
         const existing = await sql`SELECT id FROM aquapay_orders WHERE dispenser_id=${dispenser_id} AND status IN ('pending','paid') LIMIT 1`;
         if (existing.length > 0)
             return NextResponse.json({ success: false, error: 'Dispenser has pending order' }, { status: 409 });
