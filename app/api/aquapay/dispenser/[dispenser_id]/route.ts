@@ -1,5 +1,6 @@
 // GET /api/aquapay/dispenser/[dispenser_id]
 // ESP32 polls this every 3s. Returns LCD text + any dispense command.
+// Uses status='paid' → 'dispensing' transition to prevent double-dispense.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
@@ -10,19 +11,21 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     try {
         const { dispenser_id } = await params;
 
-        // 1. Check for a paid order ready to dispense
+        // Atomically grab a paid order and set it to 'dispensing'
         const orders = await sql`
-            SELECT id, order_id, amount_ml FROM aquapay_orders
-            WHERE dispenser_id=${dispenser_id}
-              AND status='paid'
-              AND token_delivered=FALSE
-            ORDER BY paid_at ASC
-            LIMIT 1`;
+            UPDATE aquapay_orders
+            SET status = 'dispensing'
+            WHERE id = (
+                SELECT id FROM aquapay_orders
+                WHERE dispenser_id=${dispenser_id}
+                  AND status='paid'
+                ORDER BY paid_at ASC
+                LIMIT 1
+            )
+            RETURNING order_id, amount_ml`;
 
         if (orders.length > 0) {
             const o = orders[0];
-            // Mark as delivered so we don't dispense twice
-            await sql`UPDATE aquapay_orders SET token_delivered=TRUE WHERE id=${o.id} AND token_delivered=FALSE`;
             console.log(`[DISPENSER] Dispense ${o.amount_ml}ml for ${o.order_id}`);
             return NextResponse.json({
                 dispense: true,
@@ -31,7 +34,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             });
         }
 
-        // 2. No dispense needed — return current LCD text
+        // No dispense needed — return current LCD text
         const lcd = await sql`
             SELECT line1, line2 FROM aquapay_lcd
             WHERE dispenser_id=${dispenser_id}
