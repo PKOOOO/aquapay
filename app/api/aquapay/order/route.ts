@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { initiateMpesaCharge } from '@/lib/paystack';
+import { initiateMpesaCharge, isTestMode, submitChargeOTP } from '@/lib/paystack';
 import crypto from 'crypto';
 
 export async function POST(request: NextRequest) {
@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
         const amountCents = Math.round((amount_ml / 100) * 100);
         const amountKes = amountCents / 100;
 
-        // Auto-expire stale orders older than 3 minutes
+        // Auto-expire stale pending/paid orders older than 3 minutes
         await sql`UPDATE aquapay_orders SET status='expired'
                   WHERE dispenser_id=${dispenser_id}
                     AND status IN ('pending','paid','dispensing')
@@ -27,16 +27,19 @@ export async function POST(request: NextRequest) {
         const orderId = `AQ_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
         const ref = `aquapay_${orderId}`;
 
-        // Send M-Pesa STK push (fire and forget — we don't wait for payment confirmation)
-        initiateMpesaCharge(phone, amountKes, ref).catch((err) => {
-            console.error(`[ORDER] STK push failed for ${orderId}:`, err);
-        });
+        await sql`INSERT INTO aquapay_orders (order_id, dispenser_id, phone, amount_ml, amount_kes, status, paystack_ref)
+              VALUES (${orderId}, ${dispenser_id}, ${phone}, ${amount_ml}, ${amountCents}, 'pending', ${ref})`;
 
-        // Immediately mark as paid so the ESP32 dispenses right away
-        await sql`INSERT INTO aquapay_orders (order_id, dispenser_id, phone, amount_ml, amount_kes, status, paystack_ref, paid_at)
-              VALUES (${orderId}, ${dispenser_id}, ${phone}, ${amount_ml}, ${amountCents}, 'paid', ${ref}, NOW())`;
+        const charge = await initiateMpesaCharge(phone, amountKes, ref);
+        if (!charge.success) {
+            await sql`UPDATE aquapay_orders SET status='failed' WHERE order_id=${orderId}`;
+            return NextResponse.json({ success: false, error: 'Payment failed: ' + charge.message }, { status: 502 });
+        }
 
-        console.log(`[ORDER] ${orderId}: ${amount_ml}ml, KES ${amountKes}, phone ${phone} — marked paid immediately`);
+        if (isTestMode() && charge.data?.status === 'send_otp') {
+            console.log(`[ORDER] Test mode — auto-submitting OTP "123456"`);
+            await submitChargeOTP('123456', charge.data?.reference || ref);
+        }
 
         return NextResponse.json({ success: true, order_id: orderId, amount_ml, amount_kes: amountCents });
     } catch (error) {
