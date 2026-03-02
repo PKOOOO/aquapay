@@ -12,7 +12,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         const { order_id } = await params;
         const orders = await sql`
             SELECT id, status FROM aquapay_orders
-            WHERE order_id=${order_id} AND status='paid'
+            WHERE order_id=${order_id} AND status IN ('paid', 'dispensing', 'dispensed')
             LIMIT 1`;
 
         if (orders.length === 0) return NextResponse.json({ paid: false });

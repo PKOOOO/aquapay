@@ -34,14 +34,25 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             });
         }
 
-        // No dispense needed — return current LCD text
-        const lcd = await sql`
-            SELECT line1, line2 FROM aquapay_lcd
-            WHERE dispenser_id=${dispenser_id}
+        // Check if there's a pending order (user is paying, don't override app LCD)
+        const pending = await sql`
+            SELECT id FROM aquapay_orders
+            WHERE dispenser_id=${dispenser_id} AND status='pending'
             LIMIT 1`;
 
-        const line1 = lcd.length > 0 ? lcd[0].line1 : 'AquaPay Ready';
-        const line2 = lcd.length > 0 ? lcd[0].line2 : 'Order via app';
+        let line1: string, line2: string;
+        if (pending.length > 0) {
+            // Let the app control the LCD during payment
+            const lcd = await sql`
+                SELECT line1, line2 FROM aquapay_lcd
+                WHERE dispenser_id=${dispenser_id}
+                LIMIT 1`;
+            line1 = lcd.length > 0 ? lcd[0].line1 : 'Waiting payment';
+            line2 = lcd.length > 0 ? lcd[0].line2 : 'Check your phone';
+        } else {
+            line1 = 'AquaPay Ready';
+            line2 = 'Order via app';
+        }
 
         return NextResponse.json({
             dispense: false,
